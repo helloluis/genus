@@ -34,3 +34,19 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# build output
+dist/
+
+# drizzle
+drizzle/
+
+# claude code local settings
+.claude/
+
+# large generated assets (samples, raw art)
+samples/
+packages/game/art/
+
+# node_modules in all packages
+**/node_modules/

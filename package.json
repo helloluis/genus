@@ -1,0 +1,16 @@
+{
+  "name": "genus",
+  "private": true,
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "scripts": {
+    "dev:game": "pnpm --filter @genus/game dev",
+    "dev:server": "pnpm --filter @genus/server dev",
+    "maker": "pnpm --filter @genus/maker",
+    "db:generate": "pnpm --filter @genus/db generate",
+    "db:migrate": "pnpm --filter @genus/db migrate",
+    "db:seed": "pnpm --filter @genus/db seed",
+    "build": "pnpm -r build"
+  }
+}
