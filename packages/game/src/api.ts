@@ -15,6 +15,7 @@ interface ServerBall {
 
 interface ServerBox {
   categoryName: string;
+  wrongTemplate?: string;
   hideLabels: boolean;
   roundNumber: number;
   timeLimitMs: number;
@@ -86,22 +87,18 @@ export function syncPicks(selectedBallIds: number[]): void {
   }).catch((err) => console.warn("Sync failed:", err));
 }
 
-/** Request the next box from the server (after clearing a round) */
+/** Fetch the next box from the server */
 export async function fetchNextBox(): Promise<BoxData | null> {
+  currentRoundNumber++;
   try {
-    const res = await fetch(`${API_BASE}/game/submit`, {
+    const res = await fetch(`${API_BASE}/game/next-box`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId,
-        roundNumber: currentRoundNumber,
-        selectedBallIds: [], // empty — server already has the picks from syncPicks
-      }),
+      body: JSON.stringify({ sessionId, roundNumber: currentRoundNumber }),
     });
-    const data: SubmitResponse = await res.json();
-    if (data.nextBox) {
-      currentRoundNumber = data.nextBox.roundNumber;
-      return serverBoxToLocal(data.nextBox);
+    const data = await res.json();
+    if (data.box) {
+      return serverBoxToLocal(data.box);
     }
   } catch (err) {
     console.warn("fetchNextBox failed:", err);
@@ -114,6 +111,7 @@ function serverBoxToLocal(box: ServerBox): BoxData {
   const correctSet = new Set(box.correctIds);
   return {
     categoryName: box.categoryName,
+    wrongTemplate: box.wrongTemplate,
     hideLabels: box.hideLabels,
     roundNumber: box.roundNumber,
     timeLimitMs: box.timeLimitMs,
@@ -125,6 +123,27 @@ function serverBoxToLocal(box: ServerBox): BoxData {
       isCorrect: correctSet.has(b.id),
     })),
   };
+}
+
+/** Submit developer feedback about a round */
+export async function submitDevFeedback(payload: {
+  questionText: string;
+  correctTag?: string;
+  pool?: string;
+  options: { id: number; label: string; isCorrect: boolean }[];
+  selectedOptionId?: number;
+  selectedOptionLabel?: string;
+  feedback: string;
+}): Promise<void> {
+  try {
+    await fetch(`${API_BASE}/dev/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.warn("Dev feedback submit failed:", err);
+  }
 }
 
 /** Check if we're in offline/test mode (no server) */

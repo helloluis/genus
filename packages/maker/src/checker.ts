@@ -1,171 +1,264 @@
-import { eq, and } from "drizzle-orm";
-import { db, categories, selections } from "@genus/db";
-import { getDashscope, MODEL } from "./dashscope.js";
-import { selectionVerificationPrompt } from "./prompts.js";
+import { eq, and, sql } from "drizzle-orm";
+import { db, poolItems, questions } from "@genus/db";
+import { MODEL } from "./dashscope.js";
 
-interface VerificationResult {
+interface TagCheckResult {
   label: string;
-  markedCorrect: boolean;
-  actuallyCorrect: boolean;
+  shouldHaveTag: boolean;
   valid: boolean;
   reason: string;
 }
 
-interface VerificationResponse {
-  results: VerificationResult[];
+interface TagCheckResponse {
+  results: TagCheckResult[];
 }
 
 async function callLLM(system: string, user: string): Promise<string> {
-  const response = await getDashscope().chat.completions.create({
-    model: MODEL,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ],
-    temperature: 0.1, // Low temperature for fact-checking
-  });
-  return response.choices[0]?.message?.content ?? "";
+  const apiKey = process.env.DASHSCOPE_API_KEY;
+  if (!apiKey) throw new Error("DASHSCOPE_API_KEY not set");
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 90_000);
+
+  try {
+    const res = await fetch(
+      "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          temperature: 0.1,
+          enable_thinking: false,
+        }),
+        signal: controller.signal,
+      }
+    );
+
+    const data = await res.json() as any;
+    return data.choices?.[0]?.message?.content ?? "";
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function parseJSON<T>(raw: string): T {
-  const cleaned = raw.replace(/```(?:json)?\s*/g, "").replace(/```\s*/g, "");
-  return JSON.parse(cleaned);
+  // Strip markdown fences and think blocks
+  let cleaned = raw.replace(/```(?:json)?\s*/g, "").replace(/```\s*/g, "");
+  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+  // Find the JSON object
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error("No JSON found in response");
+  return JSON.parse(jsonMatch[0]);
 }
 
-export async function checkCategory(categoryId: number): Promise<{
-  verified: number;
-  rejected: number;
+/**
+ * Check a single question: verify that items with the correctTag truly belong,
+ * and a sample of items without it truly don't.
+ */
+export async function checkQuestion(questionId: number): Promise<{
+  correct: number;
+  mistagged: number;
+  fixes: { itemId: number; label: string; action: "add" | "remove"; reason: string }[];
 }> {
-  const [category] = await db
+  const [question] = await db
     .select()
-    .from(categories)
-    .where(eq(categories.id, categoryId));
+    .from(questions)
+    .where(eq(questions.id, questionId));
 
-  if (!category) {
-    throw new Error(`Category ${categoryId} not found`);
+  if (!question) throw new Error(`Question ${questionId} not found`);
+
+  // Get all items in this pool
+  const allItems = await db
+    .select()
+    .from(poolItems)
+    .where(eq(poolItems.pool, question.pool));
+
+  // Split by tag
+  const tagged: typeof allItems = [];
+  const untagged: typeof allItems = [];
+  for (const item of allItems) {
+    const tags: string[] = Array.isArray(item.tags)
+      ? item.tags
+      : typeof item.tags === "string"
+        ? JSON.parse(item.tags as string)
+        : [];
+    if (tags.includes(question.correctTag)) {
+      tagged.push(item);
+    } else {
+      untagged.push(item);
+    }
   }
 
-  // Get all unverified selections for this category
-  const unverified = await db
-    .select()
-    .from(selections)
-    .where(
-      and(
-        eq(selections.categoryId, categoryId),
-        eq(selections.verified, false)
-      )
-    );
+  // Sample up to 20 untagged items to check for false negatives
+  const shuffled = [...untagged].sort(() => Math.random() - 0.5);
+  const untaggedSample = shuffled.slice(0, 20);
 
-  if (unverified.length === 0) {
-    console.log(`Category "${category.name}": no unverified selections.`);
-    return { verified: 0, rejected: 0 };
+  const itemsToCheck = [
+    ...tagged.map((i) => ({ id: i.id, label: i.label, hasTag: true })),
+    ...untaggedSample.map((i) => ({ id: i.id, label: i.label, hasTag: false })),
+  ];
+
+  if (itemsToCheck.length === 0) {
+    console.log(`  Question "${question.text}": no items in pool "${question.pool}"`);
+    return { correct: 0, mistagged: 0, fixes: [] };
   }
 
-  console.log(
-    `Checking ${unverified.length} selections for "${category.name}"...`
-  );
+  const systemPrompt = `You are a fact-checking expert for a trivia game. Your job is to verify whether items are correctly tagged for a given category/question.
 
-  const items = unverified.map((s) => ({
-    label: s.label,
-    isCorrect: s.isCorrect,
-  }));
+The game uses a tag-based system: items in a pool have tags, and questions select correct answers by matching a specific tag. You need to verify:
+1. Items WITH the tag truly belong to the category (no false positives)
+2. Items WITHOUT the tag truly don't belong (no false negatives — items that SHOULD be tagged but aren't)
 
-  const prompt = selectionVerificationPrompt(
-    category.name,
-    category.name,
-    items
-  );
-  const raw = await callLLM(prompt.system, prompt.user);
-  const response = parseJSON<VerificationResponse>(raw);
+Be precise and factual. When in doubt, err on the side of flagging for review.
 
-  let verified = 0;
-  let rejected = 0;
+Respond ONLY with valid JSON, no markdown fences.`;
+
+  const userPrompt = `Pool: "${question.pool}"
+Question displayed to player: "${question.text}"
+Tag being checked: "${question.correctTag}"
+
+For each item below, verify whether it should or should not have the tag "${question.correctTag}".
+
+Items currently TAGGED (supposedly correct answers):
+${tagged.map((i, idx) => `${idx + 1}. "${i.label}"`).join("\n")}
+
+Items currently NOT tagged (supposedly wrong answers — check for any that SHOULD be tagged):
+${untaggedSample.map((i, idx) => `${tagged.length + idx + 1}. "${i.label}"`).join("\n")}
+
+Return JSON:
+{
+  "results": [
+    {"label": "item name", "shouldHaveTag": true, "valid": true, "reason": "Correct: this item belongs"},
+    {"label": "item name", "shouldHaveTag": false, "valid": true, "reason": "Correct: this item does not belong"},
+    {"label": "item name", "shouldHaveTag": true, "valid": false, "reason": "WRONG: tagged but doesn't actually belong because X"},
+    {"label": "item name", "shouldHaveTag": false, "valid": false, "reason": "MISSING: should be tagged because X"}
+  ]
+}
+
+Set "valid" to true if the current tag status is accurate. Set to false if it needs to be changed.
+"shouldHaveTag" is what YOU think the correct state should be.`;
+
+  console.log(`  Checking "${question.text}" (tag: ${question.correctTag}, pool: ${question.pool}) — ${tagged.length} tagged, ${untaggedSample.length} sampled untagged...`);
+
+  let raw: string;
+  try {
+    raw = await callLLM(systemPrompt, userPrompt);
+  } catch (e) {
+    console.warn(`  Skipped (LLM call failed): ${(e as Error).message}`);
+    return { correct: 0, mistagged: 0, fixes: [] };
+  }
+
+  let response: TagCheckResponse;
+  try {
+    response = parseJSON<TagCheckResponse>(raw);
+  } catch (e) {
+    console.error(`  Failed to parse LLM response for question ${questionId}:`, (e as Error).message);
+    console.error(`  Raw response (first 500 chars):`, raw.substring(0, 500));
+    return { correct: 0, mistagged: 0, fixes: [] };
+  }
+
+  let correct = 0;
+  let mistagged = 0;
+  const fixes: { itemId: number; label: string; action: "add" | "remove"; reason: string }[] = [];
 
   for (const result of response.results) {
-    const selection = unverified.find(
-      (s) => s.label.toLowerCase() === result.label.toLowerCase()
+    const item = itemsToCheck.find(
+      (i) => i.label.toLowerCase() === result.label.toLowerCase()
     );
-    if (!selection) continue;
+    if (!item) continue;
 
     if (result.valid) {
-      await db
-        .update(selections)
-        .set({ verified: true })
-        .where(eq(selections.id, selection.id));
-      verified++;
+      correct++;
     } else {
-      // Delete invalid selections
-      await db.delete(selections).where(eq(selections.id, selection.id));
-      rejected++;
+      mistagged++;
+      const action = result.shouldHaveTag ? "add" : "remove";
+      fixes.push({ itemId: item.id, label: item.label, action, reason: result.reason });
       console.log(
-        `  Rejected: "${result.label}" — ${result.reason}`
+        `    ✗ "${result.label}" — ${action === "add" ? "MISSING TAG" : "WRONG TAG"}: ${result.reason}`
       );
     }
   }
 
-  // Check if category meets minimum thresholds
-  const verifiedCorrect = await db
+  console.log(`    ${correct} correct, ${mistagged} mistagged`);
+  return { correct, mistagged, fixes };
+}
+
+/**
+ * Check all active questions and report/fix tag issues.
+ */
+export async function checkAllQuestions(applyFixes = false): Promise<void> {
+  const activeQuestions = await db
     .select()
-    .from(selections)
-    .where(
-      and(
-        eq(selections.categoryId, categoryId),
-        eq(selections.verified, true),
-        eq(selections.isCorrect, true)
-      )
-    );
+    .from(questions)
+    .where(eq(questions.active, true));
 
-  const verifiedDistractors = await db
-    .select()
-    .from(selections)
-    .where(
-      and(
-        eq(selections.categoryId, categoryId),
-        eq(selections.verified, true),
-        eq(selections.isCorrect, false)
-      )
-    );
+  console.log(`\n=== Checking ${activeQuestions.length} active questions ===\n`);
 
-  const meetsThreshold =
-    verifiedCorrect.length >= 15 && verifiedDistractors.length >= 8;
+  let totalCorrect = 0;
+  let totalMistagged = 0;
+  const allFixes: { itemId: number; label: string; action: "add" | "remove"; tag: string; reason: string }[] = [];
 
-  if (meetsThreshold) {
-    await db
-      .update(categories)
-      .set({ verified: true })
-      .where(eq(categories.id, categoryId));
-    console.log(
-      `  ✓ Category "${category.name}" verified (${verifiedCorrect.length} correct, ${verifiedDistractors.length} distractors)`
-    );
+  for (const q of activeQuestions) {
+    const { correct, mistagged, fixes } = await checkQuestion(q.id);
+    totalCorrect += correct;
+    totalMistagged += mistagged;
+    for (const f of fixes) {
+      allFixes.push({ ...f, tag: q.correctTag });
+    }
+  }
+
+  console.log(`\n=== Check complete: ${totalCorrect} correct, ${totalMistagged} mistagged ===`);
+
+  if (allFixes.length > 0) {
+    console.log(`\n${allFixes.length} fixes needed:`);
+    for (const fix of allFixes) {
+      console.log(`  ${fix.action === "add" ? "+" : "-"} "${fix.label}" tag:"${fix.tag}" — ${fix.reason}`);
+    }
+
+    if (applyFixes) {
+      console.log(`\nApplying ${allFixes.length} fixes...`);
+      for (const fix of allFixes) {
+        const [item] = await db
+          .select()
+          .from(poolItems)
+          .where(eq(poolItems.id, fix.itemId));
+        if (!item) continue;
+
+        const tags: string[] = Array.isArray(item.tags)
+          ? item.tags
+          : typeof item.tags === "string"
+            ? JSON.parse(item.tags as string)
+            : [];
+
+        let newTags: string[];
+        if (fix.action === "add") {
+          newTags = [...tags, fix.tag];
+        } else {
+          newTags = tags.filter((t) => t !== fix.tag);
+        }
+
+        await db
+          .update(poolItems)
+          .set({ tags: newTags })
+          .where(eq(poolItems.id, fix.itemId));
+        console.log(`  Fixed: "${fix.label}" — ${fix.action} tag "${fix.tag}"`);
+      }
+      console.log("All fixes applied.");
+    } else {
+      console.log(`\nRun with --fix to apply these changes.`);
+    }
   } else {
-    console.log(
-      `  ✗ Category "${category.name}" needs more items (${verifiedCorrect.length}/15 correct, ${verifiedDistractors.length}/8 distractors)`
-    );
+    console.log("No fixes needed!");
   }
-
-  return { verified, rejected };
 }
 
-export async function checkAllUnverified(): Promise<void> {
-  const unverifiedCategories = await db
-    .select()
-    .from(categories)
-    .where(eq(categories.verified, false));
-
-  console.log(
-    `\n=== Checking ${unverifiedCategories.length} unverified categories ===\n`
-  );
-
-  let totalVerified = 0;
-  let totalRejected = 0;
-
-  for (const cat of unverifiedCategories) {
-    const { verified, rejected } = await checkCategory(cat.id);
-    totalVerified += verified;
-    totalRejected += rejected;
-  }
-
-  console.log(
-    `\n=== Check complete: ${totalVerified} verified, ${totalRejected} rejected ===\n`
-  );
-}
+// Legacy export for index.ts compatibility
+export const checkAllUnverified = () => checkAllQuestions(false);

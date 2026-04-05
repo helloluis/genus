@@ -8,6 +8,7 @@ export interface BallData {
 
 export interface BoxData {
   categoryName: string;
+  wrongTemplate?: string;
   hideLabels?: boolean;
   roundNumber: number;
   timeLimitMs: number;

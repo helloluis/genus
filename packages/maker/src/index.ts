@@ -6,9 +6,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: resolve(__dirname, "../../../.env.local") });
 
 import { generateAll } from "./generator.js";
-import { checkAllUnverified } from "./checker.js";
+import { checkAllQuestions } from "./checker.js";
 
 const command = process.argv[2];
+const hasFlag = (flag: string) => process.argv.includes(flag);
 
 async function main() {
   switch (command) {
@@ -18,19 +19,20 @@ async function main() {
       break;
     }
     case "check": {
-      await checkAllUnverified();
+      const applyFixes = hasFlag("--fix");
+      await checkAllQuestions(applyFixes);
       break;
     }
     case "pipeline": {
       const count = parseInt(process.argv[3] || "5", 10);
       await generateAll(count);
-      await checkAllUnverified();
+      await checkAllQuestions(false);
       break;
     }
     default:
       console.log("Usage: tsx src/index.ts <generate|check|pipeline> [count]");
       console.log("  generate [count]  - Generate categories and selections");
-      console.log("  check             - Verify all unverified categories");
+      console.log("  check [--fix]     - Verify all questions against pool tags");
       console.log("  pipeline [count]  - Generate then check");
       process.exit(1);
   }

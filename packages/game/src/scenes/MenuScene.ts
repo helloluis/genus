@@ -12,7 +12,7 @@ export class MenuScene extends Phaser.Scene {
     // Title
     this.add
       .text(width / 2, height * 0.3, "GENUS", {
-        fontFamily: "Georgia, serif",
+        fontFamily: "Ranchers, cursive",
         fontSize: `${Math.min(width * 0.15, 96)}px`,
         color: COLORS.textDark,
         fontStyle: "bold",
@@ -22,7 +22,7 @@ export class MenuScene extends Phaser.Scene {
     // Subtitle
     this.add
       .text(width / 2, height * 0.42, "A General Knowledge Game", {
-        fontFamily: "Georgia, serif",
+        fontFamily: "Ranchers, cursive",
         fontSize: `${Math.min(width * 0.04, 24)}px`,
         color: "#795548",
       })
@@ -42,7 +42,7 @@ export class MenuScene extends Phaser.Scene {
 
     const btnText = this.add
       .text(width / 2, btnY + btnHeight / 2, "PLAY", {
-        fontFamily: "Georgia, serif",
+        fontFamily: "Ranchers, cursive",
         fontSize: "28px",
         color: COLORS.textLight,
         fontStyle: "bold",
@@ -68,7 +68,48 @@ export class MenuScene extends Phaser.Scene {
         btn.strokeRoundedRect(btnX, btnY, btnWidth, btnHeight, 12);
       })
       .on("pointerdown", () => {
-        this.scene.start("GameScene");
+        this.scene.start("GameScene", { devMode: false });
+      });
+
+    // Developer Mode button — smaller, below Play
+    const devBtnWidth = Math.min(width * 0.4, 200);
+    const devBtnHeight = 44;
+    const devBtnX = width / 2 - devBtnWidth / 2;
+    const devBtnY = btnY + btnHeight + 20;
+
+    const devBtn = this.add.graphics();
+    devBtn.fillStyle(0x546e7a, 1);
+    devBtn.fillRoundedRect(devBtnX, devBtnY, devBtnWidth, devBtnHeight, 10);
+    devBtn.lineStyle(2, 0x37474f, 1);
+    devBtn.strokeRoundedRect(devBtnX, devBtnY, devBtnWidth, devBtnHeight, 10);
+
+    this.add
+      .text(width / 2, devBtnY + devBtnHeight / 2, "DEVELOPER MODE", {
+        fontFamily: "Ranchers, cursive",
+        fontSize: "18px",
+        color: "#eceff1",
+      })
+      .setOrigin(0.5);
+
+    this.add
+      .rectangle(width / 2, devBtnY + devBtnHeight / 2, devBtnWidth, devBtnHeight)
+      .setInteractive({ useHandCursor: true })
+      .on("pointerover", () => {
+        devBtn.clear();
+        devBtn.fillStyle(0x78909c, 1);
+        devBtn.fillRoundedRect(devBtnX, devBtnY, devBtnWidth, devBtnHeight, 10);
+        devBtn.lineStyle(2, 0x37474f, 1);
+        devBtn.strokeRoundedRect(devBtnX, devBtnY, devBtnWidth, devBtnHeight, 10);
+      })
+      .on("pointerout", () => {
+        devBtn.clear();
+        devBtn.fillStyle(0x546e7a, 1);
+        devBtn.fillRoundedRect(devBtnX, devBtnY, devBtnWidth, devBtnHeight, 10);
+        devBtn.lineStyle(2, 0x37474f, 1);
+        devBtn.strokeRoundedRect(devBtnX, devBtnY, devBtnWidth, devBtnHeight, 10);
+      })
+      .on("pointerdown", () => {
+        this.scene.start("GameScene", { devMode: true });
       });
 
     // Handle resize

@@ -29,7 +29,7 @@ export class ResultScene extends Phaser.Scene {
     // Game Over title
     this.add
       .text(width / 2, cardY + 50, "GAME OVER", {
-        fontFamily: "Georgia, serif",
+        fontFamily: "Ranchers, cursive",
         fontSize: "36px",
         color: COLORS.textDark,
         fontStyle: "bold",
@@ -39,7 +39,7 @@ export class ResultScene extends Phaser.Scene {
     // Score
     this.add
       .text(width / 2, cardY + 110, `Score: ${score}`, {
-        fontFamily: "Georgia, serif",
+        fontFamily: "Ranchers, cursive",
         fontSize: "28px",
         color: COLORS.textDark,
       })
@@ -48,7 +48,7 @@ export class ResultScene extends Phaser.Scene {
     // Boxes cleared
     this.add
       .text(width / 2, cardY + 155, `Boxes Cleared: ${boxesCleared}`, {
-        fontFamily: "Georgia, serif",
+        fontFamily: "Ranchers, cursive",
         fontSize: "20px",
         color: "#795548",
       })
@@ -68,7 +68,7 @@ export class ResultScene extends Phaser.Scene {
 
     this.add
       .text(width / 2, btnY + btnHeight / 2, "PLAY AGAIN", {
-        fontFamily: "Georgia, serif",
+        fontFamily: "Ranchers, cursive",
         fontSize: "22px",
         color: COLORS.textLight,
         fontStyle: "bold",

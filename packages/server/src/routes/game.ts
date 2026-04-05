@@ -1,9 +1,9 @@
 import type { FastifyPluginAsync } from "fastify";
-import { eq, and, notInArray, sql } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import {
   db,
-  categories,
-  selections,
+  poolItems,
+  questions,
   gameSessions,
   rounds,
   dailyUsage,
@@ -14,16 +14,9 @@ import {
   SubmitPicksSchema,
   FIRST_BOX_TIME_MS,
   NEXT_BOX_TIME_MS,
-  HELPER_MODE_ROUNDS,
-  MIN_CORRECT_PER_BOX,
-  MAX_CORRECT_PER_BOX,
   BALLS_PER_BOX,
   FREE_GAMES_PER_DAY,
 } from "@genus/shared";
-
-function randomInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
 
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
@@ -34,86 +27,70 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
-async function assembleBox(
-  sessionId: string,
-  roundNumber: number
-) {
-  // Find categories already used in this session
+async function assembleBox(sessionId: string, roundNumber: number) {
+  // Find question IDs already used in this session
   const usedRounds = await db
-    .select({ categoryId: rounds.categoryId })
+    .select({ questionId: rounds.questionId })
     .from(rounds)
     .where(eq(rounds.sessionId, sessionId));
-  const usedCategoryIds = usedRounds.map((r) => r.categoryId);
+  const usedQuestionIds = usedRounds
+    .map((r) => r.questionId)
+    .filter((id): id is number => id != null);
 
-  // Pick a random verified category not yet used
-  const availableCategories = await db
+  // Pick a random active question not yet used
+  const available = await db
     .select()
-    .from(categories)
+    .from(questions)
+    .where(eq(questions.active, true));
+
+  const unused = available.filter((q) => !usedQuestionIds.includes(q.id));
+  if (unused.length === 0) return null;
+
+  const question = unused[Math.floor(Math.random() * unused.length)];
+
+  // Get all items from this pool with images
+  const allItems = await db
+    .select()
+    .from(poolItems)
     .where(
       and(
-        eq(categories.verified, true),
-        eq(categories.active, true),
-        usedCategoryIds.length > 0
-          ? notInArray(categories.id, usedCategoryIds)
-          : undefined
+        eq(poolItems.pool, question.pool),
+        eq(poolItems.imageStatus, "success")
       )
     );
 
-  if (availableCategories.length === 0) {
-    return null; // No more categories available
+  // Split into correct (has the tag) and distractors (doesn't)
+  const correct: typeof allItems = [];
+  const distractors: typeof allItems = [];
+  for (const item of allItems) {
+    const tags: string[] = Array.isArray(item.tags) ? item.tags : typeof item.tags === "string" ? JSON.parse(item.tags as string) : [];
+    if (tags.includes(question.correctTag)) {
+      correct.push(item);
+    } else {
+      distractors.push(item);
+    }
   }
 
-  const category =
-    availableCategories[randomInt(0, availableCategories.length - 1)];
+  if (correct.length === 0 || distractors.length < BALLS_PER_BOX - 1) {
+    // Not enough items — skip this question
+    return null;
+  }
 
-  // Get correct and incorrect selections
-  const correctSelections = await db
-    .select()
-    .from(selections)
-    .where(
-      and(
-        eq(selections.categoryId, category.id),
-        eq(selections.isCorrect, true),
-        eq(selections.verified, true)
-      )
-    );
-
-  const distractorSelections = await db
-    .select()
-    .from(selections)
-    .where(
-      and(
-        eq(selections.categoryId, category.id),
-        eq(selections.isCorrect, false),
-        eq(selections.verified, true)
-      )
-    );
-
-  // Pick random correct items (3-5)
-  const numCorrect = randomInt(MIN_CORRECT_PER_BOX, MAX_CORRECT_PER_BOX);
-  const pickedCorrect = shuffle(correctSelections).slice(0, numCorrect);
-
-  // Pad with distractors to reach total (20-25)
-  const totalBalls = BALLS_PER_BOX;
-  const numDistractors = totalBalls - pickedCorrect.length;
-  const pickedDistractors = shuffle(distractorSelections).slice(
-    0,
-    numDistractors
-  );
-
+  // Pick 1 correct + fill rest with distractors
+  const pickedCorrect = shuffle(correct).slice(0, 1);
+  const pickedDistractors = shuffle(distractors).slice(0, BALLS_PER_BOX - 1);
   const allBalls = shuffle([...pickedCorrect, ...pickedDistractors]);
   const correctIds = pickedCorrect.map((s) => s.id);
 
-  const timeLimitMs =
-    roundNumber === 1 ? FIRST_BOX_TIME_MS : NEXT_BOX_TIME_MS;
+  const timeLimitMs = roundNumber === 1 ? FIRST_BOX_TIME_MS : NEXT_BOX_TIME_MS;
 
   return {
-    categoryId: category.id,
-    categoryName: category.name,
-    hideLabels: category.hideLabels,
+    questionId: question.id,
+    questionText: question.text,
+    wrongTemplate: question.wrongTemplate,
+    hideLabels: question.hideLabels,
     roundNumber,
     timeLimitMs,
-    helperMode: roundNumber <= HELPER_MODE_ROUNDS,
     balls: allBalls.map((s) => ({
       id: s.id,
       label: s.label,
@@ -124,7 +101,6 @@ async function assembleBox(
 }
 
 export const gameRoutes: FastifyPluginAsync = async (app) => {
-  // Check if player can play (free games remaining)
   app.get<{ Querystring: { playerId: string } }>(
     "/can-play",
     async (request) => {
@@ -150,11 +126,9 @@ export const gameRoutes: FastifyPluginAsync = async (app) => {
     }
   );
 
-  // Start a new game session
   app.post("/start", async (request) => {
     const body = StartGameSchema.parse(request.body);
 
-    // Get or create player
     const [player] = await db
       .select()
       .from(players)
@@ -164,47 +138,73 @@ export const gameRoutes: FastifyPluginAsync = async (app) => {
       return { error: "Player not found. Register first." };
     }
 
-    // Create session
     const [session] = await db
       .insert(gameSessions)
       .values({ playerId: player.id })
       .returning();
 
-    // Assemble first box
     const box = await assembleBox(session.id, 1);
     if (!box) {
-      return { error: "No categories available." };
+      return { error: "No questions available." };
     }
 
-    // Record the round
     await db.insert(rounds).values({
       sessionId: session.id,
-      categoryId: box.categoryId,
+      questionId: box.questionId,
       roundNumber: 1,
       timeLimitMs: box.timeLimitMs,
-      correctSelectionIds: box.correctIds,
+      correctItemIds: box.correctIds,
       startedAt: new Date(),
     });
 
     return {
       sessionId: session.id,
       box: {
-        categoryName: box.categoryName,
+        categoryName: box.questionText,
+        wrongTemplate: box.wrongTemplate,
         hideLabels: box.hideLabels,
         roundNumber: box.roundNumber,
         timeLimitMs: box.timeLimitMs,
-        helperMode: box.helperMode,
         balls: box.balls,
         correctIds: box.correctIds,
       },
     };
   });
 
-  // Submit picks for current round
+  // Request next box for an active session
+  app.post("/next-box", async (request) => {
+    const { sessionId, roundNumber } = request.body as { sessionId: string; roundNumber: number };
+
+    const box = await assembleBox(sessionId, roundNumber);
+    if (!box) {
+      return { box: null };
+    }
+
+    await db.insert(rounds).values({
+      sessionId,
+      questionId: box.questionId,
+      roundNumber,
+      timeLimitMs: box.timeLimitMs,
+      correctItemIds: box.correctIds,
+      startedAt: new Date(),
+    });
+
+    return {
+      box: {
+        categoryName: box.questionText,
+        wrongTemplate: box.wrongTemplate,
+        hideLabels: box.hideLabels,
+        roundNumber: box.roundNumber,
+        timeLimitMs: box.timeLimitMs,
+        balls: box.balls,
+        correctIds: box.correctIds,
+      },
+    };
+  });
+
   app.post("/submit", async (request) => {
     const body = SubmitPicksSchema.parse(request.body);
 
-    // Get the round
     const [round] = await db
       .select()
       .from(rounds)
@@ -219,9 +219,8 @@ export const gameRoutes: FastifyPluginAsync = async (app) => {
       return { error: "Round not found." };
     }
 
-    const correctIds = round.correctSelectionIds as number[];
+    const correctIds = round.correctItemIds as number[];
 
-    // Calculate score
     let roundScore = 0;
     const picks = body.selectedBallIds.map((id) => {
       const correct = correctIds.includes(id);
@@ -234,34 +233,24 @@ export const gameRoutes: FastifyPluginAsync = async (app) => {
       body.selectedBallIds.includes(id)
     );
 
-    // Update round
     await db
       .update(rounds)
-      .set({
-        score: roundScore,
-        picks,
-        endedAt: new Date(),
-      })
+      .set({ score: roundScore, picks, endedAt: new Date() })
       .where(eq(rounds.id, round.id));
 
-    // Update session score
     const [session] = await db
       .select()
       .from(gameSessions)
       .where(eq(gameSessions.id, body.sessionId));
 
-    const newTotalScore = (session?.totalScore ?? 0) + roundScore;
-    const newBoxesCleared = (session?.boxesCleared ?? 0) + (allCorrectSelected ? 1 : 0);
-
     await db
       .update(gameSessions)
       .set({
-        totalScore: newTotalScore,
-        boxesCleared: newBoxesCleared,
+        totalScore: (session?.totalScore ?? 0) + roundScore,
+        boxesCleared: (session?.boxesCleared ?? 0) + (allCorrectSelected ? 1 : 0),
       })
       .where(eq(gameSessions.id, body.sessionId));
 
-    // If all correct, prepare next box
     let nextBox = null;
     if (allCorrectSelected) {
       const nextRoundNumber = body.roundNumber + 1;
@@ -270,19 +259,18 @@ export const gameRoutes: FastifyPluginAsync = async (app) => {
       if (assembled) {
         await db.insert(rounds).values({
           sessionId: body.sessionId,
-          categoryId: assembled.categoryId,
+          questionId: assembled.questionId,
           roundNumber: nextRoundNumber,
           timeLimitMs: assembled.timeLimitMs,
-          correctSelectionIds: assembled.correctIds,
+          correctItemIds: assembled.correctIds,
           startedAt: new Date(),
         });
 
         nextBox = {
-          categoryName: assembled.categoryName,
+          categoryName: assembled.questionText,
           hideLabels: assembled.hideLabels,
           roundNumber: assembled.roundNumber,
           timeLimitMs: assembled.timeLimitMs,
-          helperMode: assembled.helperMode,
           balls: assembled.balls,
           correctIds: assembled.correctIds,
         };

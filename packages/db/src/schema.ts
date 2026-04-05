@@ -15,6 +15,32 @@ import {
 
 // ── Content tables (populated by Maker) ───────────────────
 
+/** A pool of items sharing a visual domain (animals, dogs, landmarks, etc.) */
+export const poolItems = pgTable("pool_items", {
+  id: serial("id").primaryKey(),
+  pool: text("pool").notNull(), // "animals", "dogs", "landmarks", "logos", "monsters", "fictional", "real-people"
+  label: text("label").notNull(),
+  imageUrl: text("image_url"),
+  imageStatus: text("image_status").notNull().default("pending"),
+  tags: jsonb("tags").notNull().default([]), // string[] — e.g. ["mammal", "large", "african", "carnivore"]
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** A question that can be asked against a pool using tag filters */
+export const questions = pgTable("questions", {
+  id: serial("id").primaryKey(),
+  text: text("text").notNull(), // Display text, e.g. "Action Star"
+  pool: text("pool").notNull(), // Which pool to query
+  correctTag: text("correct_tag").notNull(), // Items with this tag are correct
+  wrongTemplate: text("wrong_template").notNull().default(""), // e.g. "{name} isn't venomous!"
+  hideLabels: boolean("hide_labels").notNull().default(false),
+  difficulty: smallint("difficulty").notNull().default(1),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── Legacy tables (kept for migration, will be removed) ───
+
 export const categories = pgTable("categories", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
@@ -84,14 +110,12 @@ export const rounds = pgTable("rounds", {
   sessionId: uuid("session_id")
     .notNull()
     .references(() => gameSessions.id),
-  categoryId: integer("category_id")
-    .notNull()
-    .references(() => categories.id),
+  questionId: integer("question_id").references(() => questions.id),
   roundNumber: smallint("round_number").notNull(),
   timeLimitMs: integer("time_limit_ms").notNull(),
   score: integer("score").notNull().default(0),
   picks: jsonb("picks").notNull().default([]),
-  correctSelectionIds: jsonb("correct_selection_ids").notNull().default([]),
+  correctItemIds: jsonb("correct_item_ids").notNull().default([]),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
   endedAt: timestamp("ended_at", { withTimezone: true }),
 });
@@ -110,3 +134,19 @@ export const dailyUsage = pgTable(
     pk: primaryKey({ columns: [table.playerId, table.date] }),
   })
 );
+
+// ── Developer feedback ───────────────────────────────────
+
+export const devFeedback = pgTable("dev_feedback", {
+  id: serial("id").primaryKey(),
+  questionText: text("question_text").notNull(),
+  correctTag: text("correct_tag"),
+  pool: text("pool"),
+  options: jsonb("options").notNull().default([]), // { id, label, isCorrect }[]
+  selectedOptionId: integer("selected_option_id"),
+  selectedOptionLabel: text("selected_option_label"),
+  feedback: text("feedback").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});

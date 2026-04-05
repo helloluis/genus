@@ -1,8 +1,8 @@
 /** Timer duration for the first box in milliseconds */
-export const FIRST_BOX_TIME_MS = 15_000;
+export const FIRST_BOX_TIME_MS = 10_000;
 
 /** Timer duration for subsequent boxes in milliseconds */
-export const NEXT_BOX_TIME_MS = 15_000;
+export const NEXT_BOX_TIME_MS = 10_000;
 
 /** Number of rounds with helper mode enabled */
 export const HELPER_MODE_ROUNDS = 3;
@@ -19,11 +19,8 @@ export const WRONG_PICK_SCORE = -1;
 /** Balls per box (always 16 for 4x4 grid) */
 export const BALLS_PER_BOX = 16;
 
-/** Minimum correct items per box */
-export const MIN_CORRECT_PER_BOX = 1;
-
-/** Maximum correct items per box */
-export const MAX_CORRECT_PER_BOX = 3;
+/** Correct items per box (always 1 for fast gameplay) */
+export const CORRECT_PER_BOX = 1;
 
 /** Free games allowed per player per day */
 export const FREE_GAMES_PER_DAY = 2;
