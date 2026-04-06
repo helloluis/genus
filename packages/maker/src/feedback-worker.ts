@@ -22,10 +22,15 @@ import { db, devFeedback, questions, poolItems } from "@genus/db";
 import { eq, and, isNull, sql } from "drizzle-orm";
 import { MODEL } from "./dashscope.js";
 import { imageGenerationPrompt } from "./prompts.js";
+import { writeFile, mkdir } from "fs/promises";
+import { existsSync } from "fs";
+import { resolve } from "path";
+import { execSync } from "child_process";
 
 const API_KEY = process.env.DASHSCOPE_API_KEY!;
 const DASHSCOPE_CHAT = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions";
 const DASHSCOPE_IMAGE = "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+const IMAGE_DIR = resolve("/opt/genus/packages/game/dist/images");
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -148,12 +153,13 @@ async function executeAction(action: Action): Promise<boolean> {
 
     case "fix_tag": {
       if (!action.itemLabel || !action.tag || !action.tagAction) return false;
-      // Find the item — search across all pools if pool not specified
-      const conditions = action.pool
-        ? and(eq(poolItems.label, action.itemLabel), eq(poolItems.pool, action.pool))
-        : eq(poolItems.label, action.itemLabel);
-
-      const [item] = await db.select().from(poolItems).where(conditions);
+      // Find the item — try with pool first, then without
+      let [item] = action.pool
+        ? await db.select().from(poolItems).where(and(eq(poolItems.label, action.itemLabel), eq(poolItems.pool, action.pool)))
+        : [];
+      if (!item) {
+        [item] = await db.select().from(poolItems).where(eq(poolItems.label, action.itemLabel));
+      }
       if (!item) {
         console.log(`    ✗ Item not found: "${action.itemLabel}"`);
         return false;
@@ -178,11 +184,12 @@ async function executeAction(action: Action): Promise<boolean> {
 
     case "rerender_image": {
       if (!action.itemLabel) return false;
-      const conditions = action.pool
-        ? and(eq(poolItems.label, action.itemLabel), eq(poolItems.pool, action.pool))
-        : eq(poolItems.label, action.itemLabel);
-
-      const [item] = await db.select().from(poolItems).where(conditions);
+      let [item] = action.pool
+        ? await db.select().from(poolItems).where(and(eq(poolItems.label, action.itemLabel), eq(poolItems.pool, action.pool)))
+        : [];
+      if (!item) {
+        [item] = await db.select().from(poolItems).where(eq(poolItems.label, action.itemLabel));
+      }
       if (!item) {
         console.log(`    ✗ Item not found: "${action.itemLabel}"`);
         return false;
@@ -216,8 +223,28 @@ async function executeAction(action: Action): Promise<boolean> {
       const imageUrl = data.output?.choices?.[0]?.message?.content?.[0]?.image;
 
       if (imageUrl) {
-        await db.update(poolItems).set({ imageUrl, imageStatus: "success" }).where(eq(poolItems.id, item.id));
-        console.log(`    ✓ Re-rendered: "${item.label}"`);
+        // Download and save locally as JPG
+        try {
+          await mkdir(IMAGE_DIR, { recursive: true });
+          const pngFile = resolve(IMAGE_DIR, `${item.pool}_${item.id}.png`);
+          const jpgFile = resolve(IMAGE_DIR, `${item.pool}_${item.id}.jpg`);
+          const imgRes = await fetch(imageUrl);
+          const buffer = Buffer.from(await imgRes.arrayBuffer());
+          await writeFile(pngFile, buffer);
+          // Convert to JPG
+          try {
+            execSync(`convert "${pngFile}" -resize 512x512 -quality 80 "${jpgFile}" && rm "${pngFile}"`);
+          } catch {
+            // If imagemagick not available, keep as PNG
+            await writeFile(jpgFile, buffer); // save as-is with .jpg extension
+          }
+          const localUrl = `/images/${item.pool}_${item.id}.jpg`;
+          await db.update(poolItems).set({ imageUrl: localUrl, imageStatus: "success" }).where(eq(poolItems.id, item.id));
+          console.log(`    ✓ Re-rendered and saved: "${item.label}"`);
+        } catch (e) {
+          console.log(`    ✗ Download failed: ${(e as Error).message}`);
+          return false;
+        }
         return true;
       } else {
         console.log(`    ✗ Image gen failed: ${data.code || "unknown"}`);
