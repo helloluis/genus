@@ -40,7 +40,14 @@ interface SubmitResponse {
 function getDeviceId(): string {
   let id = localStorage.getItem("genus_device_id");
   if (!id) {
-    id = crypto.randomUUID();
+    // crypto.randomUUID() requires HTTPS; fall back for HTTP
+    if (typeof crypto.randomUUID === "function") {
+      id = crypto.randomUUID();
+    } else {
+      id = "xxxx-xxxx-xxxx-xxxx".replace(/x/g, () =>
+        Math.floor(Math.random() * 16).toString(16)
+      );
+    }
     localStorage.setItem("genus_device_id", id);
   }
   return id;

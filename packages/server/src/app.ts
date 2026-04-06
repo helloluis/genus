@@ -19,12 +19,14 @@ export async function buildApp() {
   // Serve built game client in production
   const gameDistPath = resolve(__dirname, "../../game/dist");
   if (existsSync(gameDistPath)) {
+    // Serve game client and images from dist/
     await app.register(fastifyStatic, {
       root: gameDistPath,
       prefix: "/",
-      wildcard: false,
+      serve: true,
     });
-    // SPA fallback — serve index.html for non-API routes
+
+    // SPA fallback — serve index.html for non-API, non-asset routes
     app.setNotFoundHandler((request, reply) => {
       if (request.url.startsWith("/api")) {
         reply.code(404).send({ error: "Not found" });

@@ -160,10 +160,13 @@ export class GameScene extends Phaser.Scene {
     // ── Load first box ──
     if (this.useApi) {
       try {
+        console.log("[Genus] Calling startGame API...");
         const box = await startGame();
+        console.log("[Genus] API returned box:", box.categoryName, "with", box.balls.length, "balls");
+        console.log("[Genus] First ball imageUrl:", box.balls[0]?.imageUrl);
         this.loadBox(box);
       } catch (err) {
-        console.warn("API unavailable, falling back to test data", err);
+        console.error("[Genus] API FAILED, falling back to test data:", err);
         this.useApi = false;
         this.loadBox(TEST_BOXES[0]);
       }
@@ -260,7 +263,14 @@ export class GameScene extends Phaser.Scene {
     };
 
     if (needsLoad) {
-      this.load.once("complete", show);
+      this.load.once("complete", () => {
+        const loaded = badgesToShow.filter(b => b.imageUrl && this.textures.exists(`ball_img_${b.id}`)).length;
+        console.log(`[Genus] Images loaded: ${loaded}/${badgesToShow.filter(b => b.imageUrl).length}`);
+        show();
+      });
+      this.load.once("loaderror", (file: any) => {
+        console.error(`[Genus] Image load error:`, file.key, file.url);
+      });
       this.load.start();
     } else {
       show();
