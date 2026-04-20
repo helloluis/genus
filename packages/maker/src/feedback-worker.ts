@@ -90,7 +90,19 @@ async function interpretFeedback(entry: typeof devFeedback.$inferSelect): Promis
   const options = entry.options as { id: number; label: string; isCorrect: boolean }[];
   const optionsList = options.map((o) => `${o.label}${o.isCorrect ? " (CORRECT)" : ""}`).join(", ");
 
+  // Look up the actual question to get its correctTag and pool
+  const [question] = await db
+    .select({ text: questions.text, pool: questions.pool, correctTag: questions.correctTag })
+    .from(questions)
+    .where(eq(questions.text, entry.questionText));
+
+  const questionInfo = question
+    ? `Question pool: "${question.pool}", correctTag: "${question.correctTag}" — when adding/removing a tag to fix correctness, use THIS tag name exactly.`
+    : `Question not found in DB — guess the pool and tag from context.`;
+
   const system = `You interpret developer feedback for a trivia game called Genus. The game shows a 4x4 grid of images and asks players to find the correct one.
+
+The game uses a tag-based system: each question has a specific "correctTag" (e.g., "wears-cape", "marvel", "princess"). Items in the pool are tagged, and items with the question's correctTag are shown as correct answers.
 
 Based on the feedback, return a JSON array of actions to take. Each action has a "type" and relevant fields.
 
@@ -98,13 +110,14 @@ Action types:
 - "deactivate_question": Remove a question/category. Fields: questionText, reason
 - "rename_question": Change question display text. Fields: questionText, newName, reason
 - "fix_tag": Add or remove a tag. Fields: itemLabel, pool, tag, tagAction ("add"|"remove"), reason
+  — IMPORTANT: The "tag" field MUST be the exact correctTag name (e.g., "wears-cape", not "correct" or "cape")
 - "rerender_image": Re-generate an image. Fields: itemLabel, pool, reason
 - "skip": No automated action possible. Fields: reason
 
 Rules:
 - If feedback says "remove this category" or similar → deactivate_question
 - If feedback mentions wrong/bad images → rerender_image
-- If feedback says an item should/shouldn't be a correct answer → fix_tag
+- If feedback says an item should/shouldn't be a correct answer → fix_tag using the question's correctTag
 - If feedback suggests renaming → rename_question
 - If feedback is just a comment or too vague → skip
 - You can return multiple actions for one feedback entry
@@ -112,6 +125,7 @@ Rules:
 Respond ONLY with a JSON array, no markdown.`;
 
   const user = `Question: "${entry.questionText}"
+${questionInfo}
 Options shown: ${optionsList}
 Selected: ${entry.selectedOptionLabel || "none"} (id: ${entry.selectedOptionId || "none"})
 Feedback: "${entry.feedback}"
@@ -268,8 +282,7 @@ async function processNewFeedback() {
   const unprocessed = await db
     .select()
     .from(devFeedback)
-    .where(sql`${devFeedback.createdAt} > NOW() - INTERVAL '24 hours'
-      AND ${devFeedback.id} NOT IN (
+    .where(sql`${devFeedback.id} NOT IN (
         SELECT id FROM dev_feedback WHERE feedback LIKE '%[processed]%'
       )`);
 
