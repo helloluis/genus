@@ -1,6 +1,7 @@
 import { eq, and, sql } from "drizzle-orm";
 import { db, poolItems, questions } from "@genus/db";
 import { MODEL } from "./dashscope.js";
+import { PLAYER_PROFILE } from "./player-profile.js";
 
 interface TagCheckResult {
   label: string;
@@ -113,11 +114,13 @@ export async function checkQuestion(questionId: number): Promise<{
 
   const systemPrompt = `You are a fact-checking expert for a trivia game. Your job is to verify whether items are correctly tagged for a given category/question.
 
+${PLAYER_PROFILE}
+
 The game uses a tag-based system: items in a pool have tags, and questions select correct answers by matching a specific tag. You need to verify:
 1. Items WITH the tag truly belong to the category (no false positives)
 2. Items WITHOUT the tag truly don't belong (no false negatives — items that SHOULD be tagged but aren't)
 
-Be precise and factual. When in doubt, err on the side of flagging for review.
+Be precise and factual. When in doubt, err on the side of flagging for review. Judge "belonging" from the perspective of our TARGET PLAYER — if an item's membership is only obvious to experts, it's a bad tag.
 
 Respond ONLY with valid JSON, no markdown fences.`;
 

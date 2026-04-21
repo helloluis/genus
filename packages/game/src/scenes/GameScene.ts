@@ -2,7 +2,7 @@ import Phaser from "phaser";
 import { COLORS } from "../utils/colors.js";
 import { TEST_BOXES } from "../utils/testdata.js";
 import type { BallData, BoxData } from "../utils/types.js";
-import { startGame, syncPicks, fetchNextBox, isOfflineMode, submitDevFeedback } from "../api.js";
+import { startGame, syncPicks, fetchNextBox, isOfflineMode, submitDevFeedback, submitProposalDecision } from "../api.js";
 
 /** Always 16 badges in a 4×4 grid */
 const GRID_COLS = 4;
@@ -52,6 +52,7 @@ export class GameScene extends Phaser.Scene {
   // Dev mode UI
   private devNextBtn!: Phaser.GameObjects.Container;
   private devFeedbackBtn!: Phaser.GameObjects.Container;
+  private proposalBadge: Phaser.GameObjects.Container | null = null;
 
   // Grid positioning (computed on layout)
   private gridX = 0;
@@ -161,7 +162,7 @@ export class GameScene extends Phaser.Scene {
     if (this.useApi) {
       try {
         console.log("[Genus] Calling startGame API...");
-        const box = await startGame();
+        const box = await startGame(this.devMode);
         console.log("[Genus] API returned box:", box.categoryName, "with", box.balls.length, "balls");
         console.log("[Genus] First ball imageUrl:", box.balls[0]?.imageUrl);
         this.loadBox(box);
@@ -241,6 +242,9 @@ export class GameScene extends Phaser.Scene {
         }
       }
     }
+
+    // Show or hide the proposal badge for this round
+    this.renderProposalBadge();
 
     const show = () => {
       // Flash question text large in grid center, then animate to top
@@ -730,6 +734,53 @@ export class GameScene extends Phaser.Scene {
     this.devNextBtn.add([nrBg, nrText, nrZone]);
   }
 
+  /** Render a badge above the helper text when a proposal exists for this round */
+  private renderProposalBadge() {
+    // Remove any existing badge first
+    if (this.proposalBadge) {
+      this.proposalBadge.destroy();
+      this.proposalBadge = null;
+    }
+
+    const proposal = this.currentBox?.proposal;
+    if (!proposal || !this.devMode) return;
+
+    const { width } = this.scale;
+    const gridBottom = this.gridY + (1050 * this.gridScale);
+    const y = gridBottom + 30;
+
+    // Build label text
+    let label: string;
+    if (proposal.action === "rename") {
+      label = `PROPOSAL: rename to "${proposal.value}"`;
+    } else if (proposal.action === "deactivate") {
+      label = `PROPOSAL: deactivate this question`;
+    } else {
+      label = `PROPOSAL: ${proposal.action}`;
+    }
+
+    const container = this.add.container(width / 2, y).setDepth(110);
+
+    const textObj = this.add
+      .text(0, 0, label, {
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "13px",
+        color: "#ffffff",
+        padding: { x: 10, y: 4 },
+      })
+      .setOrigin(0.5);
+
+    const tw = textObj.width;
+    const th = textObj.height;
+
+    const bg = this.add.graphics();
+    bg.fillStyle(0xff8f00, 1);
+    bg.fillRoundedRect(-tw / 2, -th / 2, tw, th, 6);
+
+    container.add([bg, textObj]);
+    this.proposalBadge = container;
+  }
+
   private devAdvanceRound() {
     if (this.devMode) {
       // If we already have a pending box from a correct pick, use it
@@ -752,6 +803,7 @@ export class GameScene extends Phaser.Scene {
 
   private showDevFeedbackDialog() {
     const { width, height } = this.scale;
+    const proposal = this.currentBox?.proposal;
 
     // Dark overlay
     const overlay = this.add.graphics().setDepth(400);
@@ -760,16 +812,15 @@ export class GameScene extends Phaser.Scene {
     overlay.setInteractive(
       new Phaser.Geom.Rectangle(0, 0, width, height),
       Phaser.Geom.Rectangle.Contains
-    ); // block clicks through
+    );
 
-    const panelW = Math.min(width * 0.9, 500);
-    const panelH = 340;
+    const panelW = Math.min(width * 0.9, 540);
+    const panelH = proposal ? 460 : 340;
     const panelX = (width - panelW) / 2;
     const panelY = (height - panelH) / 2;
 
     const panel = this.add.container(0, 0).setDepth(401);
 
-    // Panel background
     const bg = this.add.graphics();
     bg.fillStyle(0xffffff, 1);
     bg.fillRoundedRect(panelX, panelY, panelW, panelH, 16);
@@ -777,7 +828,6 @@ export class GameScene extends Phaser.Scene {
     bg.strokeRoundedRect(panelX, panelY, panelW, panelH, 16);
     panel.add(bg);
 
-    // Title
     const title = this.add
       .text(width / 2, panelY + 24, "Round Feedback", {
         fontFamily: "system-ui, sans-serif", fontSize: "22px", color: "#333333",
@@ -785,7 +835,6 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5, 0);
     panel.add(title);
 
-    // Round info
     const info = `"${this.currentBox?.categoryName || "?"}" — Round ${this.currentBoxIndex + 1}`;
     const infoText = this.add
       .text(width / 2, panelY + 60, info, {
@@ -794,6 +843,46 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5, 0);
     panel.add(infoText);
 
+    // Optional proposal section
+    let contentTop = panelY + 90;
+    if (proposal) {
+      const proposalY = panelY + 88;
+      const proposalH = 90;
+      const proposalBg = this.add.graphics();
+      proposalBg.fillStyle(0xfff4e0, 1);
+      proposalBg.fillRoundedRect(panelX + 16, proposalY, panelW - 32, proposalH, 8);
+      proposalBg.lineStyle(1, 0xffc78a, 1);
+      proposalBg.strokeRoundedRect(panelX + 16, proposalY, panelW - 32, proposalH, 8);
+      panel.add(proposalBg);
+
+      let proposalText: string;
+      if (proposal.action === "rename") {
+        proposalText = `Proposal: Rename to "${proposal.value}"`;
+      } else if (proposal.action === "deactivate") {
+        proposalText = `Proposal: Deactivate this question`;
+      } else {
+        proposalText = `Proposal: ${proposal.action}`;
+      }
+
+      panel.add(
+        this.add
+          .text(panelX + 28, proposalY + 10, proposalText, {
+            fontFamily: "system-ui, sans-serif", fontSize: "15px", color: "#5a3d00", fontStyle: "bold",
+          })
+          .setOrigin(0, 0)
+      );
+      panel.add(
+        this.add
+          .text(panelX + 28, proposalY + 34, proposal.reasoning, {
+            fontFamily: "system-ui, sans-serif", fontSize: "12px", color: "#5a3d00",
+            wordWrap: { width: panelW - 56 },
+          })
+          .setOrigin(0, 0)
+      );
+
+      contentTop = proposalY + proposalH + 10;
+    }
+
     // Create HTML textarea overlay for text input
     const textareaId = "dev-feedback-input";
     let textarea = document.getElementById(textareaId) as HTMLTextAreaElement | null;
@@ -801,13 +890,15 @@ export class GameScene extends Phaser.Scene {
 
     textarea = document.createElement("textarea");
     textarea.id = textareaId;
-    textarea.placeholder = "Enter your feedback about this round...";
+    textarea.placeholder = proposal
+      ? "Your reason (used as training signal — optional)"
+      : "Enter your feedback about this round...";
     textarea.style.cssText = `
       position: fixed;
       left: ${panelX + 20}px;
-      top: ${panelY + 90}px;
+      top: ${contentTop}px;
       width: ${panelW - 40}px;
-      height: 120px;
+      height: ${proposal ? 90 : 120}px;
       font-family: system-ui, sans-serif;
       font-size: 16px;
       padding: 10px;
@@ -820,33 +911,79 @@ export class GameScene extends Phaser.Scene {
     document.body.appendChild(textarea);
     textarea.focus();
 
-    // Buttons
     const btnW = 110;
     const btnH = 44;
     const btnY2 = panelY + panelH - btnH - 20;
 
-    // Save button
+    const cleanupFn = () => {
+      textarea?.remove();
+      overlay.destroy();
+      panel.destroy();
+    };
+
+    // Proposal Accept/Reject buttons (only shown when a proposal exists)
+    if (proposal) {
+      const acceptBg = this.add.graphics();
+      acceptBg.fillStyle(0x2e7d32, 1);
+      acceptBg.fillRoundedRect(panelX + 20, btnY2, btnW, btnH, 10);
+      const acceptText = this.add
+        .text(panelX + 20 + btnW / 2, btnY2 + btnH / 2, "ACCEPT", {
+          fontFamily: "system-ui, sans-serif", fontSize: "16px", color: "#ffffff", fontStyle: "bold",
+        })
+        .setOrigin(0.5);
+      const acceptZone = this.add.zone(panelX + 20 + btnW / 2, btnY2 + btnH / 2, btnW, btnH)
+        .setInteractive({ useHandCursor: true });
+      acceptZone.on("pointerdown", () => {
+        submitProposalDecision({
+          proposalId: proposal.id,
+          decision: "accepted",
+          userReason: textarea?.value?.trim() || undefined,
+        });
+        cleanupFn();
+      });
+      panel.add([acceptBg, acceptText, acceptZone]);
+
+      const rejectBg = this.add.graphics();
+      rejectBg.fillStyle(0xc62828, 1);
+      rejectBg.fillRoundedRect(panelX + 20 + btnW + 10, btnY2, btnW, btnH, 10);
+      const rejectText = this.add
+        .text(panelX + 20 + btnW + 10 + btnW / 2, btnY2 + btnH / 2, "REJECT", {
+          fontFamily: "system-ui, sans-serif", fontSize: "16px", color: "#ffffff", fontStyle: "bold",
+        })
+        .setOrigin(0.5);
+      const rejectZone = this.add.zone(panelX + 20 + btnW + 10 + btnW / 2, btnY2 + btnH / 2, btnW, btnH)
+        .setInteractive({ useHandCursor: true });
+      rejectZone.on("pointerdown", () => {
+        submitProposalDecision({
+          proposalId: proposal.id,
+          decision: "rejected",
+          userReason: textarea?.value?.trim() || undefined,
+        });
+        cleanupFn();
+      });
+      panel.add([rejectBg, rejectText, rejectZone]);
+    }
+
+    // Save feedback button — right-aligned
+    const saveX = panelX + panelW - btnW - 130;
     const saveBg = this.add.graphics();
-    saveBg.fillStyle(0x2e7d32, 1);
-    saveBg.fillRoundedRect(width / 2 - btnW - 8, btnY2, btnW, btnH, 10);
+    saveBg.fillStyle(0x1565c0, 1);
+    saveBg.fillRoundedRect(saveX, btnY2, btnW, btnH, 10);
     const saveText = this.add
-      .text(width / 2 - btnW / 2 - 8, btnY2 + btnH / 2, "SAVE", {
-        fontFamily: "system-ui, sans-serif", fontSize: "18px", color: "#ffffff", fontStyle: "bold",
+      .text(saveX + btnW / 2, btnY2 + btnH / 2, proposal ? "SAVE NOTE" : "SAVE", {
+        fontFamily: "system-ui, sans-serif", fontSize: "16px", color: "#ffffff", fontStyle: "bold",
       })
       .setOrigin(0.5);
-    const saveZone = this.add.zone(width / 2 - btnW / 2 - 8, btnY2 + btnH / 2, btnW, btnH)
+    const saveZone = this.add.zone(saveX + btnW / 2, btnY2 + btnH / 2, btnW, btnH)
       .setInteractive({ useHandCursor: true });
     saveZone.on("pointerdown", () => {
       const feedbackText = textarea?.value?.trim() || "";
       if (!feedbackText) return;
-
-      // Build options payload
       const options = this.badges.map((b) => ({
         id: b.data.id,
         label: b.data.label,
         isCorrect: b.data.isCorrect,
       }));
-
       submitDevFeedback({
         questionText: this.currentBox?.categoryName || "",
         options,
@@ -854,30 +991,24 @@ export class GameScene extends Phaser.Scene {
         selectedOptionLabel: this.lastSelectedBadge?.data.label,
         feedback: feedbackText,
       });
-
-      cleanup();
+      cleanupFn();
     });
     panel.add([saveBg, saveText, saveZone]);
 
-    // Cancel button
+    // Cancel button — far right
+    const cancelX = panelX + panelW - btnW - 20;
     const cancelBg = this.add.graphics();
     cancelBg.fillStyle(0x78909c, 1);
-    cancelBg.fillRoundedRect(width / 2 + 8, btnY2, btnW, btnH, 10);
+    cancelBg.fillRoundedRect(cancelX, btnY2, btnW, btnH, 10);
     const cancelText = this.add
-      .text(width / 2 + btnW / 2 + 8, btnY2 + btnH / 2, "CANCEL", {
-        fontFamily: "system-ui, sans-serif", fontSize: "18px", color: "#ffffff", fontStyle: "bold",
+      .text(cancelX + btnW / 2, btnY2 + btnH / 2, "CANCEL", {
+        fontFamily: "system-ui, sans-serif", fontSize: "16px", color: "#ffffff", fontStyle: "bold",
       })
       .setOrigin(0.5);
-    const cancelZone = this.add.zone(width / 2 + btnW / 2 + 8, btnY2 + btnH / 2, btnW, btnH)
+    const cancelZone = this.add.zone(cancelX + btnW / 2, btnY2 + btnH / 2, btnW, btnH)
       .setInteractive({ useHandCursor: true });
-    cancelZone.on("pointerdown", () => cleanup());
+    cancelZone.on("pointerdown", () => cleanupFn());
     panel.add([cancelBg, cancelText, cancelZone]);
-
-    const cleanup = () => {
-      textarea?.remove();
-      overlay.destroy();
-      panel.destroy();
-    };
   }
 
   // ── Navigation ─────────────────────────────────────────

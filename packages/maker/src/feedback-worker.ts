@@ -22,6 +22,8 @@ import { db, devFeedback, questions, poolItems } from "@genus/db";
 import { eq, and, isNull, sql } from "drizzle-orm";
 import { MODEL } from "./dashscope.js";
 import { imageGenerationPrompt } from "./prompts.js";
+import { PLAYER_PROFILE } from "./player-profile.js";
+import { getTrainingExamples } from "./training-examples.js";
 import { writeFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import { resolve } from "path";
@@ -100,9 +102,17 @@ async function interpretFeedback(entry: typeof devFeedback.$inferSelect): Promis
     ? `Question pool: "${question.pool}", correctTag: "${question.correctTag}" — when adding/removing a tag to fix correctness, use THIS tag name exactly.`
     : `Question not found in DB — guess the pool and tag from context.`;
 
+  const trainingExamples = await getTrainingExamples(20);
+
   const system = `You interpret developer feedback for a trivia game called Genus. The game shows a 4x4 grid of images and asks players to find the correct one.
 
+${PLAYER_PROFILE}
+
+${trainingExamples}
+
 The game uses a tag-based system: each question has a specific "correctTag" (e.g., "wears-cape", "marvel", "princess"). Items in the pool are tagged, and items with the question's correctTag are shown as correct answers.
+
+When renaming a question, the new name MUST follow the VOCABULARY RULES above — simple words only, no jargon. Respect the patterns shown in the past developer decisions.
 
 Based on the feedback, return a JSON array of actions to take. Each action has a "type" and relevant fields.
 

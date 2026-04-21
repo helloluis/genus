@@ -150,3 +150,21 @@ export const devFeedback = pgTable("dev_feedback", {
     .notNull()
     .defaultNow(),
 });
+
+/**
+ * LLM-generated change proposals reviewed by the developer during gameplay.
+ * Accepted proposals feed back into future LLM prompts as training examples.
+ */
+export const auditProposals = pgTable("audit_proposals", {
+  id: serial("id").primaryKey(),
+  questionId: integer("question_id").references(() => questions.id),
+  proposedAction: text("proposed_action").notNull(), // "rename" | "deactivate"
+  proposedValue: text("proposed_value"), // new question text for rename
+  reasoning: text("reasoning").notNull(), // LLM's reason for the proposal
+  status: text("status").notNull().default("pending"), // pending | accepted | rejected
+  userReason: text("user_reason"), // developer's reason on accept/reject
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+});

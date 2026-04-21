@@ -1,10 +1,11 @@
-import type { BoxData } from "./utils/types.js";
+import type { BoxData, ProposalData } from "./utils/types.js";
 
 const API_BASE = "/api";
 
 let playerId: string | null = null;
 let sessionId: string | null = null;
 let currentRoundNumber = 0;
+let devMode = false;
 
 /** Server box response (no isCorrect — scoring is server-side) */
 interface ServerBall {
@@ -22,6 +23,7 @@ interface ServerBox {
   helperMode: boolean;
   balls: ServerBall[];
   correctIds: number[];
+  proposal?: ProposalData | null;
 }
 
 interface StartGameResponse {
@@ -65,14 +67,15 @@ export async function registerPlayer(): Promise<string> {
   return playerId!;
 }
 
-export async function startGame(): Promise<BoxData> {
+export async function startGame(dev = false): Promise<BoxData> {
   if (!playerId) await registerPlayer();
 
+  devMode = dev;
   const deviceId = getDeviceId();
   const res = await fetch(`${API_BASE}/game/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ deviceId }),
+    body: JSON.stringify({ deviceId, devMode: dev }),
   });
   const data: StartGameResponse = await res.json();
   sessionId = data.sessionId;
@@ -101,7 +104,7 @@ export async function fetchNextBox(): Promise<BoxData | null> {
     const res = await fetch(`${API_BASE}/game/next-box`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId, roundNumber: currentRoundNumber }),
+      body: JSON.stringify({ sessionId, roundNumber: currentRoundNumber, devMode }),
     });
     const data = await res.json();
     if (data.box) {
@@ -129,7 +132,25 @@ function serverBoxToLocal(box: ServerBox): BoxData {
       imageUrl: b.imageUrl,
       isCorrect: correctSet.has(b.id),
     })),
+    proposal: box.proposal ?? null,
   };
+}
+
+/** Submit accept/reject decision on an audit proposal */
+export async function submitProposalDecision(payload: {
+  proposalId: number;
+  decision: "accepted" | "rejected";
+  userReason?: string;
+}): Promise<void> {
+  try {
+    await fetch(`${API_BASE}/dev/proposal`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.warn("Proposal decision submit failed:", err);
+  }
 }
 
 /** Submit developer feedback about a round */

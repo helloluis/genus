@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import {
   db,
   poolItems,
@@ -8,6 +8,7 @@ import {
   rounds,
   dailyUsage,
   players,
+  auditProposals,
 } from "@genus/db";
 import {
   StartGameSchema,
@@ -27,7 +28,7 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
-async function assembleBox(sessionId: string, roundNumber: number) {
+async function assembleBox(sessionId: string, roundNumber: number, devMode = false) {
   // Find question IDs already used in this session
   const usedRounds = await db
     .select({ questionId: rounds.questionId })
@@ -46,7 +47,33 @@ async function assembleBox(sessionId: string, roundNumber: number) {
   const unused = available.filter((q) => !usedQuestionIds.includes(q.id));
   if (unused.length === 0) return null;
 
-  const question = unused[Math.floor(Math.random() * unused.length)];
+  // In dev mode, prefer questions that have pending proposals
+  let question = unused[Math.floor(Math.random() * unused.length)];
+  let proposal: { id: number; action: string; value: string | null; reasoning: string } | null = null;
+
+  if (devMode) {
+    const pending = await db
+      .select()
+      .from(auditProposals)
+      .where(eq(auditProposals.status, "pending"));
+
+    const pendingByQuestion = new Map<number, typeof pending[number]>();
+    for (const p of pending) {
+      if (p.questionId != null) pendingByQuestion.set(p.questionId, p);
+    }
+
+    const withProposal = unused.filter((q) => pendingByQuestion.has(q.id));
+    if (withProposal.length > 0) {
+      question = withProposal[Math.floor(Math.random() * withProposal.length)];
+      const p = pendingByQuestion.get(question.id)!;
+      proposal = {
+        id: p.id,
+        action: p.proposedAction,
+        value: p.proposedValue,
+        reasoning: p.reasoning,
+      };
+    }
+  }
 
   // Get all items from this pool with images
   const allItems = await db
@@ -97,6 +124,7 @@ async function assembleBox(sessionId: string, roundNumber: number) {
       imageUrl: s.imageUrl,
     })),
     correctIds,
+    proposal,
   };
 }
 
@@ -128,6 +156,7 @@ export const gameRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/start", async (request) => {
     const body = StartGameSchema.parse(request.body);
+    const devMode = (request.body as any)?.devMode === true;
 
     const [player] = await db
       .select()
@@ -143,7 +172,7 @@ export const gameRoutes: FastifyPluginAsync = async (app) => {
       .values({ playerId: player.id })
       .returning();
 
-    const box = await assembleBox(session.id, 1);
+    const box = await assembleBox(session.id, 1, devMode);
     if (!box) {
       return { error: "No questions available." };
     }
@@ -159,6 +188,7 @@ export const gameRoutes: FastifyPluginAsync = async (app) => {
 
     return {
       sessionId: session.id,
+      devMode,
       box: {
         categoryName: box.questionText,
         wrongTemplate: box.wrongTemplate,
@@ -167,15 +197,20 @@ export const gameRoutes: FastifyPluginAsync = async (app) => {
         timeLimitMs: box.timeLimitMs,
         balls: box.balls,
         correctIds: box.correctIds,
+        proposal: box.proposal,
       },
     };
   });
 
   // Request next box for an active session
   app.post("/next-box", async (request) => {
-    const { sessionId, roundNumber } = request.body as { sessionId: string; roundNumber: number };
+    const { sessionId, roundNumber, devMode } = request.body as {
+      sessionId: string;
+      roundNumber: number;
+      devMode?: boolean;
+    };
 
-    const box = await assembleBox(sessionId, roundNumber);
+    const box = await assembleBox(sessionId, roundNumber, devMode === true);
     if (!box) {
       return { box: null };
     }
@@ -198,6 +233,7 @@ export const gameRoutes: FastifyPluginAsync = async (app) => {
         timeLimitMs: box.timeLimitMs,
         balls: box.balls,
         correctIds: box.correctIds,
+        proposal: box.proposal,
       },
     };
   });

@@ -7,6 +7,8 @@ dotenv.config({ path: resolve(__dirname, "../../../.env.local") });
 import { db, poolItems } from "@genus/db";
 import { eq } from "drizzle-orm";
 import { MODEL } from "./dashscope.js";
+import { PLAYER_PROFILE } from "./player-profile.js";
+import { getTrainingExamples } from "./training-examples.js";
 
 const API_KEY = process.env.DASHSCOPE_API_KEY!;
 const CHAT_URL =
@@ -88,16 +90,24 @@ OTHER: royalty, princess, prince, king, queen, iconic, tragic, funny, scary,
 async function generateBatch(
   category: string,
   count: number,
-  existingLabels: string[]
+  existingLabels: string[],
+  trainingExamples: string
 ): Promise<CharacterEntry[]> {
   const system = `You are a trivia game content designer. Generate fictional characters for a visual recognition game.
 
+${PLAYER_PROFILE}
+
+${trainingExamples}
+
 RULES:
-1. Characters must be GLOBALLY FAMOUS — recognizable worldwide
+1. Characters must be GLOBALLY FAMOUS — recognizable worldwide, not just in Western countries
 2. Characters must be VISUALLY DISTINCTIVE — identifiable from an illustrated portrait
 3. Each character needs rich, accurate tags for building trivia questions
 4. NO real people — only fictional characters
 5. NO generic animals — only named fictional characters (e.g., "Simba" not "Lion")
+6. PRIORITIZE pop culture icons your target player would recognize from movies,
+   video games, anime, and cartoons. Skip characters only known to literary
+   scholars or history buffs.
 
 ${TAG_SCHEMA}
 
@@ -149,12 +159,13 @@ async function main() {
     ["TV cartoon and animated series characters (SpongeBob, Homer Simpson, Bugs Bunny, Mickey Mouse, Scooby-Doo, Tom & Jerry, Pinocchio, Peter Pan, Aang, Finn & Jake, etc.)", 15],
   ];
 
+  const trainingExamples = await getTrainingExamples(20);
   let totalAdded = 0;
 
   for (const [category, count] of batches) {
     process.stdout.write(`\nGenerating: ${category.substring(0, 60)}... (${count})\n`);
 
-    const characters = await generateBatch(category, count, existingList);
+    const characters = await generateBatch(category, count, existingList, trainingExamples);
 
     let batchAdded = 0;
     for (const char of characters) {

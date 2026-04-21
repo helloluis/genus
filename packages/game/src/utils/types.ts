@@ -6,6 +6,13 @@ export interface BallData {
   imageUrl?: string | null;
 }
 
+export interface ProposalData {
+  id: number;
+  action: "rename" | "deactivate" | string;
+  value: string | null;
+  reasoning: string;
+}
+
 export interface BoxData {
   categoryName: string;
   wrongTemplate?: string;
@@ -14,4 +21,5 @@ export interface BoxData {
   timeLimitMs: number;
   helperMode: boolean;
   balls: BallData[];
+  proposal?: ProposalData | null;
 }
